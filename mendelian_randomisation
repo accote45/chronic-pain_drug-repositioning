@@ -1,0 +1,263 @@
+rm(list=ls())
+setwd("/path/to/chronic_pain_gwas_output/")
+
+options(warn=0)
+
+# install packages if needed
+
+library(remotes)
+#install_github("MRCIEU/TwoSampleMR")
+#install.packages("mr.raps")
+#install.packages("MungeSumstats")
+
+require(TwoSampleMR)
+require(data.table)
+#require(MungeSumstats)
+require(ieugwasr)
+require(mr.raps)
+
+# get a copy of plink reference panel data 
+
+devtools::install_github("explodecomputer/genetics.binaRies")
+genetics.binaRies::get_plink_binary()
+
+
+# medication gwas path
+
+dd<-"/path/to/23_medication-taking_GWAS_summary_statistics/"
+
+
+files1<-list.files(dd)
+
+#warnings_list<-list()
+mr_results_list<-list()
+
+#rm(i)
+for(i in 1:length(files1)){
+
+  
+  print(paste0(files1[i]," started"))
+  
+  # process exposure (drug) GWAS
+  
+exp_gwas<-read_exposure_data(
+  paste0(dd,files1[i]),
+  sep="\t",
+  snp_col="SNP",
+  beta_col="b",
+  effect_allele_col="A1",
+  other_allele_col="A2",
+  eaf_col="freq",
+  pval_col="p",
+  samplesize_col="n"
+  
+  
+  
+)
+
+# subset to SNPs associated at certain p value 
+
+snps<-exp_gwas[which(exp_gwas$pval.exposure<5*10^-6),"SNP"]
+
+print(length(snps))
+
+colnames(exp_gwas)[colnames(exp_gwas) %in% "SNP"]<-"rsid"
+colnames(exp_gwas)[colnames(exp_gwas) %in% "pval.exposure"]<-"pval"
+
+
+
+exp_gwas2<-exp_gwas[exp_gwas$rsid %in% snps,]
+
+
+# ld clump
+
+clumped<-ld_clump(
+  dat = exp_gwas2,
+  clump_kb = 500,
+  clump_r2 = 0.001,
+  clump_p = 0.99,
+  pop = "EUR",
+  #opengwas_jwt ="eyJhbGciOiJSUzI1NiIsImtpZCI6ImFwaS1qd3QiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJhcGkub3Blbmd3YXMuaW8iLCJhdWQiOiJhcGkub3Blbmd3YXMuaW8iLCJzdWIiOiJrZWlyYS5qb2huc3Rvbi51c0BnbWFpbC5jb20iLCJpYXQiOjE3MzgzNzU1NjcsImV4cCI6MTczOTU4NTE2N30.kvbCocY32qL4kE45oVKPPBNgM5syq42st6DQaXCH594pqjKzHuq9BEobR9j129GOO7Bckk17_UNwdVjnCrBzkTgFzOnFuulDWCnvQh9hz-Bydw45OI2CSj-Pr3Hla2tCt1llPAKQ3OLQoQ9Dp-BQ14H_OO0CkAV04YVlxjuwMCQq7KH8YtR-EtiyKROuPsTDznh0_lekhybA8WKTEg62B5mhUg6Md6kv6ronhuThjxfALL4fDdIHTd6tJwpCz7w0f0HvsWYGoLR-tpCBs9V2Gbm--ExIJhrHuZL7M7gLb7o42usbTsWOe7pJqON5lelV1_aeWT0DHzijcc3eml6hKw",
+  bfile = "/path/to/binaries/1kg.v3/EUR",
+  plink_bin = genetics.binaRies::get_plink_binary()
+)
+
+# load and process outcome GWAS data (chronic pain)
+outcome<-data.frame(fread("biome_eur_narrowchronicpain_gwas.narrow.glm.logistic.hybrid.rsid"))
+
+
+outcome$beta<-outcome$Z_STAT*outcome$LOG.OR._SE
+colnames(outcome)[which(colnames(outcome)=="V2")]<-"SNP"
+
+
+head(outcome)
+outcome<-outcome[outcome$SNP %in% clumped$rsid,]
+
+write.table(outcome, "chronic_pain_narrow_forMR",row.names=F,col.names=T,quote=F,sep="\t")
+
+
+out_gwas<-read_outcome_data(
+  "chronic_pain_narrow_forMR",
+  sep="\t",
+  snp_col="SNP",
+  beta_col="beta",
+  se_col="LOG.OR._SE",
+  effect_allele_col="REF",
+  other_allele_col="ALT",
+  eaf_col="A1_FREQ",
+  pval_col="P"
+  
+)
+
+
+
+
+
+
+# harmonise
+colnames(clumped)[colnames(clumped) %in% "rsid"]<-"SNP"
+harmonised<-harmonise_data(clumped,out_gwas)
+
+# perform MR
+mr_results1<-mr(harmonised)
+
+mr_results1<-mr_results1[mr_results1$method %in% c("MR Egger","Inverse variance weighted"),-c(1,2)]
+mr_results1.5<-mr_heterogeneity(harmonised)
+
+mr_results1.5<-mr_results1.5[,-c(1,2)]
+
+#require(mr.raps)
+# mr.raps.all(b_exp, b_out, se_exp, se_out)
+harmonised<-harmonised[which(harmonised$mr_keep==T),]
+
+print(paste0(files1[i]," warnings here:"))
+
+# MR-RAPS
+check1<-mr.raps.all(harmonised$beta.exposure, harmonised$beta.outcome, 
+                    harmonised$se.exposure, harmonised$se.outcome)
+
+check1$beta.p.value<-NA
+
+#check1
+print(names(last.warning))
+# no overdisp, no robust
+check1$beta.p.value[which(check1$loss.function=="l2" & check1$over.dispersion==F)]<-as.numeric(mr.raps.simple(harmonised$beta.exposure, harmonised$beta.outcome, 
+               harmonised$se.exposure, harmonised$se.outcome)$beta.p.value)
+
+# no overdispersion, robust
+check1$beta.p.value[which(check1$loss.function=="huber" & check1$over.dispersion==F)]<-
+  as.numeric(mr.raps.simple.robust(harmonised$beta.exposure, harmonised$beta.outcome, 
+                                          harmonised$se.exposure, harmonised$se.outcome,
+                                          loss.function = "huber",k = 1.345   
+  )$beta.p.value)
+
+check1$beta.p.value[which(check1$loss.function=="tukey" & check1$over.dispersion==F)]<-
+  as.numeric(mr.raps.simple.robust(harmonised$beta.exposure, harmonised$beta.outcome, 
+                                          harmonised$se.exposure, harmonised$se.outcome,
+                                          loss.function = "tukey",k = 4.685)$beta.p.value)
+
+print(names(last.warning))
+# overdispersed and not robust                                      
+check1$beta.p.value[which(check1$loss.function=="l2" & check1$over.dispersion==T)]<-
+  as.numeric(mr.raps.overdispersed(harmonised$beta.exposure, harmonised$beta.outcome, 
+                                harmonised$se.exposure, harmonised$se.outcome)$beta.p.value)
+
+# mr.raps.output.overdispersed.robust
+check1$beta.p.value[which(check1$loss.function=="huber" & check1$over.dispersion==T)]<-
+  as.numeric(mr.raps.overdispersed.robust(harmonised$beta.exposure, harmonised$beta.outcome, 
+                                            harmonised$se.exposure, harmonised$se.outcome,
+                                             loss.function = "huber",k = 1.345   
+                                            )$beta.p.value)
+
+check1$beta.p.value[which(check1$loss.function=="tukey" & check1$over.dispersion==T)]<-
+  as.numeric(mr.raps.overdispersed.robust(harmonised$beta.exposure, harmonised$beta.outcome, 
+                        harmonised$se.exposure, harmonised$se.outcome,
+              loss.function = "tukey",k = 4.685)$beta.p.value)
+
+print(names(last.warning))
+
+mr_results2<-check1
+
+mr_results1$outcome<-"chronic_pain_narrow"
+mr_results1$exposure<-files1[i]
+
+mr_results1.5$outcome<-"chronic_pain_narrow"
+mr_results1.5$exposure<-files1[i]
+
+mr_results2$outcome<-"chronic_pain_narrow"
+mr_results2$exposure<-files1[i]
+mr_results2$method<-"mr.raps"
+mr_results2$nsnp<-dim(harmonised)[1]
+
+
+mr_results11<-merge(mr_results1,mr_results1.5,by="method")
+mr_results11$outcome.y<-NULL
+mr_results11$exposure.y<-NULL
+
+colnames(mr_results11)[grep("outcome",colnames(mr_results11))]<-"outcome"
+
+colnames(mr_results11)[grep("exposure",colnames(mr_results11))]<-"exposure"
+
+colnames(mr_results2)[grep("beta.hat",colnames(mr_results2))]<-"b"
+colnames(mr_results2)[grep("beta.se",colnames(mr_results2))]<-"se"
+colnames(mr_results2)[grep("beta.p.value",colnames(mr_results2))]<-"pval"
+
+# colnames in mr raps that arent in other table
+
+a1<-colnames(mr_results2)[!colnames(mr_results2) %in% colnames(mr_results11)]
+
+a2<-data.frame(matrix(nrow=dim(mr_results11)[1],ncol=length(a1)))
+colnames(a2)<-a1
+
+mr_results11<-cbind(mr_results11,a2)
+
+# colnames in other table that arent in mr raps
+
+a1<-colnames(mr_results11)[!colnames(mr_results11) %in% colnames(mr_results2)]
+
+a2<-data.frame(matrix(nrow=dim(mr_results2)[1],ncol=length(a1)))
+colnames(a2)<-a1
+
+mr_results2<-cbind(mr_results2,a2)
+
+
+col_order<-colnames(mr_results2)
+
+mr_results11<-mr_results11[,c(col_order)]
+
+
+
+  m1<-data.frame(rbind(mr_results11,mr_results2))
+mr_results_list[[i]]<-m1
+
+
+rm(mr_results1)
+rm(mr_results1.5)
+rm(mr_results11)
+rm(mr_results2)
+rm(a1)
+rm(a2)
+rm(col_order)
+rm(check1)
+rm(harmonised)
+rm(clumped)
+rm(out_gwas)
+rm(exp_gwas)
+rm(exp_gwas2)
+
+print(paste0(files1[i]," done"))
+
+}
+
+#
+
+# put all results together
+
+data_out<-data.frame(rbindlist(mr_results_list))
+
+# save
+save(data_out,file="mr_output_all.RData")
+
+# look
+data_out
+unique(data_out$exposure)
