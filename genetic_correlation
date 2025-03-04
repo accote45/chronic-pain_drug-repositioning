@@ -1,0 +1,102 @@
+rm(list=ls())
+require(GenomicSEM)
+require(data.table)
+
+files<-c("biome_eur_narrowchronicpain_gwas.narrow.glm.logistic.hybrid.rsid", "stats_all_QC.COPC.txt")
+
+
+
+dat<-fread(files[1],data.table=F)
+
+dat$beta<-dat$Z_STAT*dat$LOG.OR._SE
+colnames(dat)[which(colnames(dat)=="V2")]<-"SNP"
+
+# fix alleles
+dat$A2<-dat$OMITTED
+
+#MAF
+
+dat$MAF<-dat$A1_FREQ
+dat$MAF[which(dat$A1_FREQ>0.5)]<-1 - dat$A1_FREQ[which(dat$A1_FREQ>0.5)]
+
+
+summary(dat$MAF)
+
+dat<-dat[,c("SNP","beta","P","Z_STAT","MAF","X.CHROM","POS","A1","A2")]
+
+
+write.table(dat, "biome_eur_narrowchronicpain_gwas.narrow.glm.logistic.hybrid.rsid2", row.names=F, col.names=T, quote=F, sep="\t")
+
+rm(dat)
+
+
+dat<-fread(files[2],data.table=F)
+
+dat$A1<-dat$ALLELE1
+dat$A2<-dat$ALLELE0
+dat$MAF<-dat$A1FREQ
+
+dat$MAF[which(dat$A1FREQ>0.5)]<-1 - dat$A1FREQ[which(dat$A1FREQ>0.5)]
+
+# taking infinitesimal model P 
+
+dat$P<-dat$P_BOLT_LMM_INF
+
+dat<-dat[,c("SNP","CHR","BP","A1","A2","SE","BETA","P","MAF")]
+
+head(dat)
+
+write.table(dat,"khoury",row.names=F,col.names=T,quote=F,sep="\t")
+
+
+#
+files<-c("biome_eur_narrowchronicpain_gwas.narrow.glm.logistic.hybrid.rsid2", "khoury")
+
+#define the reference file being used to allign alleles across summary stats
+#here we are using hapmap3
+hm3 <- "/path/to/eur_w_ld_chr/w_hm3.snplist"
+
+# name the traits 
+
+# note MCP already previously munged 
+
+trait.names<-c("biome_cp_narrow","khoury_cp")
+
+# sample size
+N=c(18949,164778)
+
+# definte the imputation quality filter
+info.filter=0.9
+
+#define the MAF filter
+maf.filter=0.01
+
+#run munge
+munge(files=files,hm3=hm3,trait.names=trait.names,N=N,info.filter=info.filter,maf.filter=maf.filter)
+
+rm(list=ls())
+#
+require(GenomicSEM)
+#vector of munged summary statisitcs from prev step - should all have XXX.sumstats.gz format
+
+traits<-c("biome_cp_narrow.sumstats.gz","khoury_cp.sumstats.gz","MCP.sumstats.gz")
+
+# 
+sample.prev<-c(0.077,0.5,NA)
+
+#vector of population prevalences - from literature usually
+population.prev<-c(0.2,0.2,NA)
+
+#the folder of LD scores
+ld<-"/path/to/eur_w_ld_chr"
+
+#the folder of LD weights [typically the same as folder of LD scores]
+wld<-"/path/to/eur_w_ld_chr"
+
+#name the traits
+trait.names<-c("biome_cp_narrow","khoury_cp","mcp")
+
+#run LDSC
+LDSCoutput<-ldsc(traits=traits,sample.prev=sample.prev,population.prev=population.prev,ld=ld,wld=wld,trait.names=trait.names)
+
+save(LDSCoutput,file="biome_khoury_mcp_ldsc.RData")
