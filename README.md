@@ -2,3 +2,6 @@ A computational genetic- and transcriptomics-based study nominates drug repurpos
 
 Alanna C. Cote*, Keira Johnston*, Carina Seah, Hannah E. Young, Laura M. Huckins
 *equal contribution
+
+
+Contact Alanna Cote (alanna.cote@gmail.com) with any questions.
